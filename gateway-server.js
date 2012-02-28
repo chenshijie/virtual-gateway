@@ -61,18 +61,18 @@ var nn = function(request, res, proxy_option) {
 var nx_proxy = function(request, res, data, need_emit) {
   _logger.info([ 'PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-' ].join("\t"));
   var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
-  if ('-' === guid) {
+  if (true || '-' === guid) {
     _logger.debug([ 'GUIDERROR', request.headers['x-guid'], request.headers['x-ak'] || '-' ].join("\t"));
     res.send('no guid');
   } else {
     // 设置目标地址和端口
     var proxy_option = {
-      host : settings.n5.host,
-      port : settings.n5.port
+      host : configs.n5.host,
+      port : configs.n5.port
     };
     if (!_.isNull(/\/N4\//.exec(request.url))) {
-      proxy_option.port = settings.n4.port;
-      proxy_option.host = settings.n4.host;
+      proxy_option.port = configs.n4.port;
+      proxy_option.host = configs.n4.host;
     }
     if (data) {
       proxy_option.data = data;
@@ -111,6 +111,19 @@ var nx_proxy = function(request, res, data, need_emit) {
       });
     }
   }
+};
+
+var n4_proxy = function(request, res, data, need_emit) {
+  _logger.info([ 'PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-' ].join("\t"));
+  // 设置目标地址和端口
+  var proxy_option = {
+    host : configs.n4.host,
+    port : configs.n4.port
+  };
+  if (data) {
+    proxy_option.data = data;
+  }
+  nn(request, res, proxy_option);
 };
 
 var isFirstVisit = function(guid, callback) {
@@ -167,28 +180,13 @@ app.post('/N4/:uri', function(req, res) {
     body += chunk;
   });
   req.on('end', function() {
-    var guid = utils.getGUIDFromXGUID(req.headers['x-guid']);
-    isFirstVisit(guid, function(firstVisit) {
-      if (firstVisit) {
-        req.headers['x-firstvisit'] = 'true';
-      } else {
-        req.headers['x-firstvisit'] = 'false';
-      }
-      nx_proxy(req, res, body);
-    });
+    n4_proxy(req, res, body);
   });
 });
 
 app.get('/N4/:uri', function(req, res) {
-  var guid = utils.getGUIDFromXGUID(req.headers['x-guid']);
-  isFirstVisit(guid, function(firstVisit) {
-    if (firstVisit) {
-      req.headers['x-firstvisit'] = 'true';
-    } else {
-      req.headers['x-firstvisit'] = 'false';
-    }
-    nx_proxy(req, res, '');
-  });
+  console.log(req.url);
+  n4_proxy(req, res, '');
 });
 
 app.post('/getGUID', function(req, res) {
