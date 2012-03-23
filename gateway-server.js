@@ -2,39 +2,41 @@ var logger = require('./lib/logger').logger;
 var utils = require('./lib/utils');
 var configs = require('./etc/settings.json');
 var _logger = logger(__dirname + '/' + configs.log.file);
-
-var fs = require('fs');
-
-var _logger = logger(__dirname + '/' + configs.log.file);
-
-var express = require('express');
-
-var app = express.createServer();
-app.use(express.static(__dirname + '/public'));
-
-fs.writeFileSync(__dirname + '/run/server.lock', process.pid.toString(), 'ascii');
 var http = require('http');
-// Redis����
+var fs = require('fs');
+// Redis对象
 var redis = require("redis");
-// Redis����,�û������û��״ε�½
+var _logger = logger(__dirname + '/' + configs.log.file);
+var express = require('express');
+var app = express.createServer();
+var _ = require('underscore');
+
+var guidServer = require('./lib/guidservice');
+var guidService = guidServer.getGUIDService('127.0.0.1', 8081);
+var wapIPList = [];
+app.use(express.static(__dirname + '/public'));
+fs.writeFileSync(__dirname + '/run/server.lock', process.pid.toString(), 'ascii');
+
+// Redis对象,用户保存用户首次登陆
 var client1 = redis.createClient(configs.redis.port, configs.redis.host);
 client1.on('ready', function() {
   client1.select(configs.redis.db);
 });
 
-var nn = function(request, res, proxy_option) {
+var proxy2Nx = function(request, res, proxy_option) {
   var body = '';
   var headers = request.headers;
 
   var options = {
-    host : proxy_option.host,
-    port : proxy_option.port,
-    path : request.url,
-    method : request.method,
-    headers : headers
+    host: proxy_option.host,
+    port: proxy_option.port,
+    path: request.url,
+    method: request.method,
+    headers: headers
   };
 
   var req = http.request(options, function(response) {
+    //TODO 处理来源IP,参考http-proxy
     response.setEncoding('binary');
     response.on('data', function(chunk) {
       body += chunk;
@@ -58,72 +60,45 @@ var nn = function(request, res, proxy_option) {
   }
 };
 
-var nx_proxy = function(request, res, data, need_emit) {
-  _logger.info([ 'PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-' ].join("\t"));
-  var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
-  if (true || '-' === guid) {
-    _logger.debug([ 'GUIDERROR', request.headers['x-guid'], request.headers['x-ak'] || '-' ].join("\t"));
-    res.send('no guid');
-  } else {
-    // ����Ŀ���ַ�Ͷ˿�
-    var proxy_option = {
-      host : configs.n5.host,
-      port : configs.n5.port
-    };
-    if (!_.isNull(/\/N4\//.exec(request.url))) {
-      proxy_option.port = configs.n4.port;
-      proxy_option.host = configs.n4.host;
-    }
-    if (data) {
-      proxy_option.data = data;
-    }
-    // console.log(proxy_option);
-    if (request.headers['x-sess']) {
-      var session = request.headers['x-sess'];
-      client.get('sess:' + session, function(err, replies) {
-        if (null === replies) {
-          getMobile(guid, function(mobile) {
-            delete request.headers['x-sess'];
-            request.headers['x-up-calling-line-id'] = String(mobile);
-            nn(request, res, proxy_option);
-          });
-        } else {
-          client.expire('sess:' + session, 1800);
-          user.find(replies, function(result) {
-            // console.log("MOBILE FROM DB: " + result[0].mobile);
-            if (result.length == 0 || undefined == result[0].mobile || null === result[0].mobile || result[0].mobile == '') {
-              getMobile(guid, function(mobile) {
-                // console.log("MOBILE FROM REDIS: " + mobile);
-                request.headers['x-up-calling-line-id'] = String(mobile);
-                nn(request, res, proxy_option);
-              });
-            } else {
-              request.headers['x-up-calling-line-id'] = String(result[0].mobile);
-              nn(request, res, proxy_option);
-            }
-          });
-        }
-      });
-    } else {
-      getMobile(guid, function(mobile) {
-        request.headers['x-up-calling-line-id'] = String(mobile);
-        nn(request, res, proxy_option);
-      });
-    }
-  }
-};
-
-var n4_proxy = function(request, res, data, need_emit) {
-  _logger.info([ 'PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-' ].join("\t"));
-  // ����Ŀ���ַ�Ͷ˿�
+var n4_proxy = function(request, res, data) {
+  _logger.info(['PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-'].join("\t"));
+  // 设置目标地址和端口
   var proxy_option = {
-    host : configs.n4.host,
-    port : configs.n4.port
+    host: configs.n4.host,
+    port: configs.n4.port
   };
   if (data) {
     proxy_option.data = data;
   }
-  nn(request, res, proxy_option);
+  proxy2Nx(request, res, proxy_option);
+};
+
+var n6_proxy = function(request, res, data) {
+  _logger.info(['PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-'].join("\t"));
+  var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
+  if (false && '-' == guid) {
+    res.end(utils.getErrorMessage( - 1, 'NO_GUID'));
+  } else {
+    // 设置目标地址和端口
+    var proxy_option = {
+      host: configs.n6.host,
+      port: configs.n6.port
+    };
+    if (data) {
+      proxy_option.data = data;
+    }
+    guidService.getIDCodeByGUID(guid, function(result) {
+      console.log(guid);
+      if (!result.error) {
+        request.headers['x-up-calling-line-id'] = String(result.idcode);
+      } else {
+        request.headers['x-up-calling-line-id'] = '';
+      }
+      console.log(result);
+      console.log(request.headers['x-up-calling-line-id']);
+      proxy2Nx(request, res, proxy_option);
+    })
+  }
 };
 
 var isFirstVisit = function(guid, callback) {
@@ -142,8 +117,36 @@ var isFirstVisit = function(guid, callback) {
   });
 };
 
-// ����N6����
+/**
+ * 获取请求来源IP
+ */
+var getRealIP = function(request) {
+  if (undefined !== request.META && undefined !== request.META['HTTP_X_FORWARDED_FOR']) {
+    return request.META['HTTP_X_FORWARDED_FOR'];
+  } else {
+    return request.connection.remoteAddress;
+  }
+};
+
+/**
+ * 判断来源IP是否来自WAP网关
+ * @param  String  ip 来源IP
+ * @return Boolean
+ */
+var isComeFromWAPNet = function(ip) {
+  return _.include(wapIPList, ip);
+};
+
+/**
+ * 处理客户端到N6的GET方式请求
+ * @param  http.ClientRequest req 请求对象
+ * @param  http.ClientResponse res 响应对象
+ * @return void
+ */
 app.get('/N6/:uri', function(req, res) {
+  console.log('N6-GET');
+  console.log(req.url);
+  console.log(req.headers['x-guid']);
   var guid = utils.getGUIDFromXGUID(req.headers['x-guid']);
   isFirstVisit(guid, function(firstVisit) {
     if (firstVisit) {
@@ -151,29 +154,44 @@ app.get('/N6/:uri', function(req, res) {
     } else {
       req.headers['x-firstvisit'] = 'false';
     }
-    nx_proxy(req, res, '');
+    n6_proxy(req, res, '');
   });
 });
 
+/**
+ * 处理客户端到N6的POST方式请求
+ * @param  http.ClientRequest req 请求对象
+ * @param  http.ClientResponse res 响应对象
+ * @return void
+ */
 app.post('/N6/:uri', function(req, res) {
-  var body = '';
-  req.on('data', function(chunk) {
-    body += chunk;
-  });
-  req.on('end', function() {
-    var guid = utils.getGUIDFromXGUID(req.headers['x-guid']);
-    isFirstVisit(guid, function(firstVisit) {
-      if (firstVisit) {
-        req.headers['x-firstvisit'] = 'true';
-      } else {
-        req.headers['x-firstvisit'] = 'false';
-      }
-      nx_proxy(req, res, body);
+  console.log('N6-POST');
+  console.log(req.url);
+  console.log(req.headers['x-guid']);
+  var realIP = getRealIP(req);
+  if (isComeFromWAPNet(realIP)) {
+    //TODO::处理来自WAP网关的情况
+    //TODO::需要判断手机号是否绑定，如果未绑定应自动绑定
+  } else {
+    var body = '';
+    req.on('data', function(chunk) {
+      body += chunk;
     });
-  });
+    req.on('end', function() {
+      var guid = utils.getGUIDFromXGUID(req.headers['x-guid']);
+      isFirstVisit(guid, function(firstVisit) {
+        if (firstVisit) {
+          req.headers['x-firstvisit'] = 'true';
+        } else {
+          req.headers['x-firstvisit'] = 'false';
+        }
+        n6_proxy(req, res, body);
+      });
+    });
+  }
 });
 
-// ����N4����
+// 处理N4请求
 app.post('/N4/:uri', function(req, res) {
   var body = '';
   req.on('data', function(chunk) {
@@ -186,9 +204,36 @@ app.post('/N4/:uri', function(req, res) {
 
 app.get('/N4/:uri', function(req, res) {
   console.log(req.url);
-  n4_proxy(req, res, '');
+  var msisdn = '';
+  if (undefined != req.headers['x-up-calling-line-id']) {
+    msisdn = req.headers['x-up-calling-line-id'].substr( - 11);
+  }
+  console.log(msisdn);
+  var options = {
+    host: '127.0.0.1',
+    port: 8081,
+    path: '/getIDCodeByMSISDN?msisdn=' + msisdn,
+    method: req.method,
+    headers: req.headers
+  };
+  var request = http.request(options, function(response) {
+    var body = '';
+    response.setEncoding('binary');
+    response.on('data', function(chunk) {
+      body += chunk;
+    });
+    response.on('end', function() {
+      var idcode = body;
+      console.log(idcode);
+      req.headers['x-up-calling-line-id'] = idcode;
+      n4_proxy(req, res, '');
+    });
+  });
+  request.end('');
 });
-
+/**
+ * 生成GUID
+ */
 app.post('/getGUID', function(req, res) {
   var body = '';
   req.on('data', function(chunk) {
@@ -197,16 +242,17 @@ app.post('/getGUID', function(req, res) {
   req.on('end', function() {
     var headers = req.headers;
     var options = {
-      host : '127.0.0.1',
-      port : 8081,
-      path : req.url,
-      method : req.method,
-      headers : headers
+      host: '127.0.0.1',
+      port: 8081,
+      path: req.url,
+      method: req.method,
+      headers: headers
     };
     var request = http.request(options, function(response) {
+      var guid = '';
       response.setEncoding('binary');
       response.on('data', function(chunk) {
-        body += chunk;
+        guid += chunk;
       });
       response.on('end', function() {
         if (response.headers['transfer-encoding'] != undefined) {
@@ -215,13 +261,25 @@ app.post('/getGUID', function(req, res) {
         if (response.headers['content-length'] != undefined) {
           delete response.headers['content-length'];
         }
-        response.headers['Content-Length'] = body.length;
-        res.writeHead(response.statusCode, response.headers);
-        res.end(body, 'binary');
+        response.headers['Content-Length'] = guid.length;
+        var headers = response.headers;
+        headers['connection'] = 'close';
+        res.writeHead(response.statusCode);
+        var result = JSON.parse(guid);
+        console.log(result);
+        if (!result.error) {
+          console.log('res.end');
+          console.log(result.guid);
+          res.end(result.guid);
+        } else {
+          res.end('gen guid error');
+        }
       });
     });
     request.end(body, 'binary');
   });
 });
+console.log(configs.service_port);
 app.listen(configs.service_port);
 console.log('Service Started ' + utils.getLocaleISOString());
+
