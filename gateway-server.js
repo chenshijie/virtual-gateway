@@ -290,6 +290,8 @@ app.post('/getGUID', function(req, res) {
 
 var isEmpty = function(value) {
     var temp = _.trim(value);
+    console.log(value +' => '+ temp);
+    console.log(temp == undefined || temp == '');
     return (temp == undefined || temp == '');
   };
 
@@ -302,8 +304,9 @@ app.get('/Auth/:idcode/Order', function(req, res) {
   var ua = req.query.ua;
   var ak = req.query.ak;
   var ip = req.query.ip;
+  var c = '02';
   var responseData = {};
-  if (!_.include(['list', 'order', 'cancel'], action)) {
+  if (action == undefined || !_.include(['list', 'order', 'cancel'], action)) {
     responseData['status_code'] = 404;
     responseData['status_txt'] = 'action error';
     res.end(JSON.stringify(responseData));
@@ -323,18 +326,26 @@ app.get('/Auth/:idcode/Order', function(req, res) {
           });
         }
         if (action == 'order') {
-          responseData['status_code'] = 200;
-          res.end(JSON.stringify(responseData));
-          auth.doOrder(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
-            console.log(authResult);
-          });
+          c = req.query.c;
+          if(isEmpty(c) || !_.include(['02','11','12','13'],c)) {
+            responseData['status_code'] = 404;
+            responseData['status_txt'] = 'lost param c';
+            res.end(JSON.stringify(responseData));
+          } else {
+            responseData['status_code'] = 200;
+            responseData['status_txt'] = 'OK';
+            res.end(JSON.stringify(responseData));
+            auth.doOrder(result.msisdn, c, ac, mc, mt, ua, ak, ip, function(authResult){
+              console.log(authResult);
+            });
+          }
         }
         if (action == 'cancel') {
           responseData['status_code'] = 200;
           responseData['status_txt'] = 'OK';
           res.end(JSON.stringify(responseData));
           auth.doCancelOrder(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
-            console.log(uthResult);
+            console.log(authResult);
           });
         }
       } else {
