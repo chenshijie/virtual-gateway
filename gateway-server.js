@@ -302,30 +302,45 @@ app.get('/Auth/:idcode/Order', function(req, res) {
   var ua = req.query.ua;
   var ak = req.query.ak;
   var ip = req.query.ip;
+  var responseData = {};
   if (!_.include(['list', 'order', 'cancel'], action)) {
-    res.end('action error!')
+    responseData['status_code'] = 404;
+    responseData['status_txt'] = 'action error';
+    res.end(JSON.stringify(responseData));
   } else if (isEmpty(ac) || isEmpty(mc) || isEmpty(mt) || isEmpty(ua) || isEmpty(ak) || isEmpty(ip)) {
-    res.end('参数错误');
+    responseData['status_code'] = 404;
+    responseData['status_txt'] = 'lost one or more essential parameters';
+    res.end(JSON.stringify(responseData));
   } else {
     guidService.getMSISDNByIDCode(idcode, function(result) {
       if (!result.error && !isEmpty(result.msisdn)) {
         if (action == 'list') {
-          auth.getOrders(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
-            res.end(JSON.stringify(authResult));
+          auth.listOrders(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
+            responseData['status_code'] = 200;
+            responseData['status_txt'] = 'OK';
+            responseData['result'] = authResult;
+            res.end(JSON.stringify(responseData));
           });
         }
         if (action == 'order') {
+          responseData['status_code'] = 200;
+          res.end(JSON.stringify(responseData));
           auth.doOrder(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
-            res.end(JSON.stringify(authResult));
+            console.log(authResult);
           });
         }
         if (action == 'cancel') {
+          responseData['status_code'] = 200;
+          responseData['status_txt'] = 'OK';
+          res.end(JSON.stringify(responseData));
           auth.doCancelOrder(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
-            res.end(JSON.stringify(authResult));
+            console.log(uthResult);
           });
         }
       } else {
-        res.end('用户未绑定手机号');
+        responseData['status_code'] = 404;
+        responseData['status_txt'] = 'client not bind msisdn';
+        res.end(JSON.stringify(responseData));
       }
     });
   }
