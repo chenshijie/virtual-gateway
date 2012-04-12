@@ -238,6 +238,13 @@ app.get('/N4/:uri', function(req, res) {
   });
   request.end('');
 });
+
+
+var genGuidMsg = function(errorCode, guid) {
+  var msg = '<?xml version="1.0" encoding="utf-8" ?><gg version="1.0"><result>'+errorCode+'</result><guid>'+guid+'</guid></gg>';
+  return msg;
+};
+
 /**
  * 生成GUID
  */
@@ -255,6 +262,8 @@ app.post('/getGUID', function(req, res) {
       method: req.method,
       headers: headers
     };
+
+    
     var request = http.request(options, function(response) {
       var guid = '';
       response.setEncoding('binary');
@@ -277,9 +286,9 @@ app.post('/getGUID', function(req, res) {
         if (!result.error) {
           console.log('res.end');
           console.log(result.guid);
-          res.end(result.guid);
+          res.end(genGuidMsg(0,result.guid));
         } else {
-          res.end('gen guid error');
+          res.end(genGuidMsg(1,''));
         }
       });
     });
