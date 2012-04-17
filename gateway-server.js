@@ -20,7 +20,11 @@ var guidService = guidServer.getGUIDService('127.0.0.1', 8081);
 var authority = require('./lib/auth');
 var auth = authority.getAuthority('211.136.109.36', 8081);
 
-var wapIPList = [];
+
+var N6Server = require('./lib/n6_server');
+var n6Service = N6Server.getN6Server(configs.n6.host, configs.n6.port);
+
+var wapIPList = require('./etc/wap_gateway_ip.json');
 app.use(express.static(__dirname + '/public'));
 fs.writeFileSync(__dirname + '/run/server.lock', process.pid.toString(), 'ascii');
 
@@ -32,8 +36,6 @@ client1.on('ready', function() {
 
 var proxy2Nx = function(request, res, proxy_option) {
     var body = '';
-    var headers = request.headers;
-
     var options = {
       host: proxy_option.host,
       port: proxy_option.port,
@@ -103,7 +105,49 @@ var n6_proxy = function(request, res, data) {
         }
         console.log(result);
         console.log(request.headers['x-up-calling-line-id']);
-        proxy2Nx(request, res, proxy_option);
+
+        ////xxxx
+        var functionID = request.headers['x-fidbid'];
+        //判断是否需要过认证
+        if('24000000' == functionID || '27000001' == functionID) {
+        //Auth2/action?c=02&v=200&sc=0001&ac=00000000&mc=00000&mt=00000000000000000000&MSISDN=15884122092&ua=j2me&ip=10.10.10.10&uid=2010&AK=
+          //auth.doAuth = function(msisdn, ac, mc, mt, ua, ak, ip, functionID, callback)
+          var ac = '00000000';
+          var mc = '00000';
+          var mt = '00000000000000000000';
+          var ua = request.headers['user-agent'] != undefined ? request.headers['user-agent'] : '';
+          var ak = request.headers['x-ak']
+          var ip = getRealIP(request);
+          var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
+          guidService.getMSISDNByGUID(guid,function(result) {
+            if(result.msisdn != '') {
+              request.headers['x-get-msisdn'] = true;
+              auth.doAuth(msisdn,ac,mc,mt,ua,ak,ip,functionID,function(authResult){
+                if(authResult.result != 200) {
+                  request.headers['x-auth-result'] = false;
+                } else {
+                  request.headers['x-auth-result'] = true;
+                }
+                if('27000001' == functionID && authResult.result != 200) {
+                  n6Service.getSubscribe('北京',authResult.message,function(subscribePage) {
+                    var tempHeaders = {};
+                    tempHeaders['Content-Length'] = subscribePage.length;
+                    res.writeHead(200, response.headers);
+                    res.end(subscribePage, 'binary');
+                  });
+                } else {
+                  proxy2Nx(request, res, proxy_option);
+                }
+              });
+            } else {//不能取得手机号
+              request.headers['x-get-msisdn'] = false;
+              proxy2Nx(request, res, proxy_option);
+            }
+          });          
+        } else {
+          proxy2Nx(request, res, proxy_option);
+        }
+        
       })
     }
   };
@@ -240,8 +284,8 @@ app.get('/N4/:uri', function(req, res) {
 });
 
 
-var genGuidMsg = function(errorCode, guid) {
-  var msg = '<?xml version="1.0" encoding="utf-8" ?><gg version="1.0"><result>'+errorCode+'</result><guid>'+guid+'</guid></gg>';
+var genGuidMsg = function(errorCode, guid, vCode) {  
+  var msg = '<?xml version="1.0" encoding="utf-8" ?><gg version="1.0"><result>'+errorCode+'</result><guid>'+guid+'</guid><vcode>'+vCode+'</vcode></gg>';
   return msg;
 };
 
@@ -249,6 +293,7 @@ var genGuidMsg = function(errorCode, guid) {
  * 生成GUID
  */
 app.post('/getGUID', function(req, res) {
+  console.log('GET GUID FROM CLIENT');
   var body = '';
   req.on('data', function(chunk) {
     body += chunk;
@@ -262,8 +307,6 @@ app.post('/getGUID', function(req, res) {
       method: req.method,
       headers: headers
     };
-
-    
     var request = http.request(options, function(response) {
       var guid = '';
       response.setEncoding('binary');
@@ -278,20 +321,28 @@ app.post('/getGUID', function(req, res) {
           delete response.headers['content-length'];
         }
         response.headers['Content-Length'] = guid.length;
-        var headers = response.headers;
-        headers['connection'] = 'close';
-        res.writeHead(response.statusCode);
+        //var headers = response.headers;
+        var headers = {};
+        headers['Content-type'] = 'text/xml';
+        //res.writeHead(response.statusCode);
         var result = JSON.parse(guid);
         console.log(result);
         if (!result.error) {
           console.log('res.end');
           console.log(result.guid);
-          res.end(genGuidMsg(0,result.guid));
+          var guid_content = genGuidMsg(0,result.guid,result.vcode);
+          headers['Content-Length'] = guid_content.length;
+          res.writeHead(response.statusCode,headers);
+          res.end(guid_content);
         } else {
-          res.end(genGuidMsg(1,''));
+          var guid_content = genGuidMsg(1,'','');
+          headers['Content-Length'] = guid_content.length;
+          res.writeHead(response.statusCode,headers);
+          res.end(guid_content);
         }
       });
     });
+    console.log(body);
     request.end(body, 'binary');
   });
 });
