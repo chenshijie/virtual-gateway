@@ -36,6 +36,7 @@ client1.on('ready', function() {
 
 var proxy2Nx = function(request, res, proxy_option) {
     var body = '';
+    var headers = request.headers;
     var options = {
       host: proxy_option.host,
       port: proxy_option.port,
