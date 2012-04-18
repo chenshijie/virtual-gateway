@@ -6,7 +6,6 @@ var http = require('http');
 var fs = require('fs');
 // Redis对象
 var redis = require("redis");
-var _logger = logger(__dirname + '/' + configs.log.file);
 var express = require('express');
 var app = express.createServer();
 
@@ -19,7 +18,6 @@ var guidService = guidServer.getGUIDService('127.0.0.1', 8081);
 
 var authority = require('./lib/auth');
 var auth = authority.getAuthority('211.136.109.36', 8081);
-
 
 var N6Server = require('./lib/n6_server');
 var n6Service = N6Server.getN6Server(configs.n6.host, configs.n6.port);
@@ -34,151 +32,190 @@ client1.on('ready', function() {
   client1.select(configs.redis.db);
 });
 
-var proxy2Nx = function(request, res, proxy_option) {
-    var body = '';
-    var headers = request.headers;
-    var options = {
-      host: proxy_option.host,
-      port: proxy_option.port,
-      path: request.url,
-      method: request.method,
-      headers: headers
-    };
+var redis_client_msisdn_range = redis.createClient(configs.redis.port, configs.redis.host);
+redis_client_msisdn_range.select(configs.redis.msisdn_range_db);
+redis_client_msisdn_range.on('ready', function() {
+  redis_client_msisdn_range.select(configs.redis.msisdn_range_db);
+});
 
-    var req = http.request(options, function(response) {
-      //TODO 处理来源IP,参考http-proxy
-      response.setEncoding('binary');
-      response.on('data', function(chunk) {
-        body += chunk;
-      });
-      response.on('end', function() {
-        if (response.headers['transfer-encoding'] != undefined) {
-          delete response.headers['transfer-encoding'];
-        }
-        if (response.headers['content-length'] != undefined) {
-          delete response.headers['content-length'];
-        }
-        response.headers['Content-Length'] = body.length;
-        res.writeHead(response.statusCode, response.headers);
-        res.end(body, 'binary');
-      });
-    });
-    if (proxy_option.data != undefined) {
-      req.end(proxy_option.data, 'binary');
-    } else {
-      req.end('', 'binary');
-    }
+var proxy2Nx = function(request, res, proxy_option) {
+  var body = '';
+  var headers = request.headers;
+  var options = {
+    host: proxy_option.host,
+    port: proxy_option.port,
+    path: request.url,
+    method: request.method,
+    headers: headers
   };
 
+  var req = http.request(options, function(response) {
+    //TODO 处理来源IP,参考http-proxy
+    response.setEncoding('binary');
+    response.on('data', function(chunk) {
+      body += chunk;
+    });
+    response.on('end', function() {
+      if (response.headers['transfer-encoding'] != undefined) {
+        delete response.headers['transfer-encoding'];
+      }
+      if (response.headers['content-length'] != undefined) {
+        delete response.headers['content-length'];
+      }
+      response.headers['Content-Length'] = body.length;
+      res.writeHead(response.statusCode, response.headers);
+      res.end(body, 'binary');
+    });
+  });
+  if (proxy_option.data != undefined) {
+    req.end(proxy_option.data, 'binary');
+  } else {
+    req.end('', 'binary');
+  }
+};
+
 var n4_proxy = function(request, res, data) {
-    _logger.info(['PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-'].join("\t"));
+  _logger.info(['PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-'].join("\t"));
+  // 设置目标地址和端口
+  var proxy_option = {
+    host: configs.n4.host,
+    port: configs.n4.port
+  };
+  if (data) {
+    proxy_option.data = data;
+  }
+  proxy2Nx(request, res, proxy_option);
+};
+
+var n6_proxy = function(request, res, data) {
+  _logger.info(['PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-'].join("\t"));
+  var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
+  console.log(guid);
+  if ('-' == guid || undefined == guid) {
+    console.log('n6_proxy: can not get guid from header');
+    res.end(utils.getErrorMessage( - 1, 'NO_GUID'));
+  } else {
     // 设置目标地址和端口
     var proxy_option = {
-      host: configs.n4.host,
-      port: configs.n4.port
+      host: configs.n6.host,
+      port: configs.n6.port
     };
     if (data) {
       proxy_option.data = data;
     }
-    proxy2Nx(request, res, proxy_option);
-  };
-
-var n6_proxy = function(request, res, data) {
-    _logger.info(['PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-'].join("\t"));
-    var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
-    if (false && '-' == guid) {
-      res.end(utils.getErrorMessage(-1, 'NO_GUID'));
-    } else {
-      // 设置目标地址和端口
-      var proxy_option = {
-        host: configs.n6.host,
-        port: configs.n6.port
-      };
-      if (data) {
-        proxy_option.data = data;
+    console.log(guid);
+    guidService.getIDCodeByGUID(guid, function(result) {
+      console.log('n6_proxy: ' + guid);
+      console.log(result);
+      if (!result.error) {
+        request.headers['x-up-calling-line-id'] = String(result.idcode);
+      } else {
+        request.headers['x-up-calling-line-id'] = '';
       }
-      guidService.getIDCodeByGUID(guid, function(result) {
-        console.log(guid);
-        if (!result.error) {
-          request.headers['x-up-calling-line-id'] = String(result.idcode);
-        } else {
-          request.headers['x-up-calling-line-id'] = '';
-        }
-        console.log(result);
-        console.log(request.headers['x-up-calling-line-id']);
-
-        ////xxxx
-        var functionID = request.headers['x-fidbid'];
-        //判断是否需要过认证
-        if('24000000' == functionID || '27000001' == functionID) {
+      var currentTimeStamp = utils.getTimestamp();
+      var mo_bind_step = 14 * 24 * 60 * 60;
+      mo_bind_step = 60 * 60; //开发阶段测试用1个小时需要上行短信
+      if (currentTimeStamp - result.bindtime > mo_bind_step) {
+        request.headers['x-need-mo'] = true;
+      } else {
+        request.headers['x-need-mo'] = false;
+      }
+      ////xxxx
+      var functionID = request.headers['x-fidbid'];
+      console.log('FUCTIONID: ' + functionID);
+      //判断是否需要过认证
+      if ('24000000' == functionID || '27000001' == functionID) {
+        console.log('zzzzzzzzzzzzzzzzzzzzzzzzzzzz');
         //Auth2/action?c=02&v=200&sc=0001&ac=00000000&mc=00000&mt=00000000000000000000&MSISDN=15884122092&ua=j2me&ip=10.10.10.10&uid=2010&AK=
-          //auth.doAuth = function(msisdn, ac, mc, mt, ua, ak, ip, functionID, callback)
-          var ac = '00000000';
-          var mc = '00000';
-          var mt = '00000000000000000000';
-          var ua = request.headers['user-agent'] != undefined ? request.headers['user-agent'] : '';
-          var ak = request.headers['x-ak']
-          var ip = getRealIP(request);
-          var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
-          guidService.getMSISDNByGUID(guid,function(result) {
-            if(result.msisdn != '') {
-              request.headers['x-get-msisdn'] = true;
-              auth.doAuth(msisdn,ac,mc,mt,ua,ak,ip,functionID,function(authResult){
-                if(authResult.result != 200) {
-                  request.headers['x-auth-result'] = false;
-                } else {
-                  request.headers['x-auth-result'] = true;
-                }
-                if('27000001' == functionID && authResult.result != 200) {
-                  n6Service.getSubscribe('北京',authResult.message,function(subscribePage) {
+        //auth.doAuth = function(msisdn, ac, mc, mt, ua, ak, ip, functionID, callback)
+        var ac = '01000000';
+        var mc = '00000';
+        var mt = '00000000000000000000';
+        var ua = request.headers['user-agent'] != undefined ? request.headers['user-agent'] : '';
+        var ak = request.headers['x-ak']
+        var ip = getRealIP(request);
+        var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
+        console.log('222222222222222222222222222222222222');
+        guidService.getMSISDNByGUID(guid, function(result) {
+          console.log(result);
+          console.log('3333333333333333');
+          if (result.msisdn != '') {
+            request.headers['x-get-msisdn'] = true;
+            auth.doAuth(result.msisdn, ac, mc, mt, ua, ak, ip, functionID, function(authResult) {
+              console.log('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+              console.log(authResult);
+              console.log(result.msisdn);
+              if (authResult.result != 200) {
+                request.headers['x-auth-result'] = false;
+              } else {
+                request.headers['x-auth-result'] = true;
+              }
+              if ('27000001' == functionID && authResult.result != 200) {
+                getPropince(msisdn, function(province) {
+                  n6Service.getSubscribe(province, authResult.message, function(subscribePage) {
                     var tempHeaders = {};
                     tempHeaders['Content-Length'] = subscribePage.length;
-                    res.writeHead(200, response.headers);
+                    res.writeHead(200, tempHeaders);
                     res.end(subscribePage, 'binary');
                   });
-                } else {
-                  proxy2Nx(request, res, proxy_option);
-                }
-              });
-            } else {//不能取得手机号
-              request.headers['x-get-msisdn'] = false;
-              proxy2Nx(request, res, proxy_option);
-            }
-          });          
-        } else {
-          proxy2Nx(request, res, proxy_option);
-        }
-        
-      })
-    }
-  };
+                });
+              } else {
+                proxy2Nx(request, res, proxy_option);
+              }
+            });
+          } else { //不能取得手机号
+            request.headers['x-get-msisdn'] = false;
+            proxy2Nx(request, res, proxy_option);
+          }
+        });
+      } else {
+        proxy2Nx(request, res, proxy_option);
+      }
+
+    })
+  }
+};
 
 var isFirstVisit = function(guid, callback) {
-    var daytime = utils.getDateString();
-    var key = daytime + ':' + guid;
-    client1.select(1);
-    client1.get(key, function(err, replies) {
-      if (null === replies) {
-        var date = new Date();
-        var timeleft = (24 - date.getHours()) * 3600 - date.getMinutes() * 60;
-        client1.setex(key, timeleft, 1);
-        callback(true);
-      } else {
-        callback(false);
-      }
-    });
-  };
+  var daytime = utils.getDateString();
+  var key = daytime + ':' + guid;
+  client1.select(1);
+  client1.get(key, function(err, replies) {
+    if (null === replies) {
+      var date = new Date();
+      var timeleft = (24 - date.getHours()) * 3600 - date.getMinutes() * 60;
+      client1.setex(key, timeleft, 1);
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
+};
 
+var getPropince = function(msisdn, callback) {
+  var key = msisdn.substr(0, 7);
+  redis_client_msisdn_range.hgetall(key, function(error, obj) {
+    if (null == error) {
+      if (obj.province != undefined) {
+        callback(obj.province);
+      } else {
+        callback('其它');
+      }
+    } else {
+      callback('其它');
+    }
+  });
+};
 /**
  * 获取请求来源IP
  */
 var getRealIP = function(request) {
-    if (undefined !== request.META && undefined !== request.META['HTTP_X_FORWARDED_FOR']) {
-      return request.META['HTTP_X_FORWARDED_FOR'];
-    } else {
-      return request.connection.remoteAddress;
-    }
-  };
+  if (undefined !== request.META && undefined !== request.META['HTTP_X_FORWARDED_FOR']) {
+    return request.META['HTTP_X_FORWARDED_FOR'];
+  } else {
+    return request.connection.remoteAddress;
+  }
+};
 
 /**
  * 判断来源IP是否来自WAP网关
@@ -186,8 +223,8 @@ var getRealIP = function(request) {
  * @return Boolean
  */
 var isComeFromWAPNet = function(ip) {
-    return _.include(wapIPList, ip);
-  };
+  return _.include(wapIPList, ip);
+};
 
 /**
  * 处理客户端到N6的GET方式请求
@@ -196,9 +233,7 @@ var isComeFromWAPNet = function(ip) {
  * @return void
  */
 app.get('/N6/:uri', function(req, res) {
-  console.log('N6-GET');
-  console.log(req.url);
-  console.log(req.headers['x-guid']);
+  console.log('GET N6');
   var guid = utils.getGUIDFromXGUID(req.headers['x-guid']);
   isFirstVisit(guid, function(firstVisit) {
     if (firstVisit) {
@@ -217,9 +252,7 @@ app.get('/N6/:uri', function(req, res) {
  * @return void
  */
 app.post('/N6/:uri', function(req, res) {
-  console.log('N6-POST');
-  console.log(req.url);
-  console.log(req.headers['x-guid']);
+  console.log('POST N6');
   var realIP = getRealIP(req);
   if (isComeFromWAPNet(realIP)) {
     //TODO::处理来自WAP网关的情况
@@ -255,12 +288,10 @@ app.post('/N4/:uri', function(req, res) {
 });
 
 app.get('/N4/:uri', function(req, res) {
-  console.log(req.url);
   var msisdn = '';
   if (undefined != req.headers['x-up-calling-line-id']) {
-    msisdn = req.headers['x-up-calling-line-id'].substr(-11);
+    msisdn = req.headers['x-up-calling-line-id'].substr( - 11);
   }
-  console.log(msisdn);
   var options = {
     host: '127.0.0.1',
     port: 8081,
@@ -276,7 +307,6 @@ app.get('/N4/:uri', function(req, res) {
     });
     response.on('end', function() {
       var idcode = body;
-      console.log(idcode);
       req.headers['x-up-calling-line-id'] = idcode;
       n4_proxy(req, res, '');
     });
@@ -284,9 +314,8 @@ app.get('/N4/:uri', function(req, res) {
   request.end('');
 });
 
-
-var genGuidMsg = function(errorCode, guid, vCode) {  
-  var msg = '<?xml version="1.0" encoding="utf-8" ?><gg version="1.0"><result>'+errorCode+'</result><guid>'+guid+'</guid><vcode>'+vCode+'</vcode></gg>';
+var genGuidMsg = function(errorCode, guid, vCode) {
+  var msg = '<?xml version="1.0" encoding="utf-8" ?><gg version="1.0"><result>' + errorCode + '</result><guid>' + guid + '</guid><vcode>' + vCode + '</vcode></gg>';
   return msg;
 };
 
@@ -294,7 +323,6 @@ var genGuidMsg = function(errorCode, guid, vCode) {
  * 生成GUID
  */
 app.post('/getGUID', function(req, res) {
-  console.log('GET GUID FROM CLIENT');
   var body = '';
   req.on('data', function(chunk) {
     body += chunk;
@@ -327,36 +355,30 @@ app.post('/getGUID', function(req, res) {
         headers['Content-type'] = 'text/xml';
         //res.writeHead(response.statusCode);
         var result = JSON.parse(guid);
-        console.log(result);
         if (!result.error) {
-          console.log('res.end');
-          console.log(result.guid);
-          var guid_content = genGuidMsg(0,result.guid,result.vcode);
+          var guid_content = genGuidMsg(0, result.guid, result.vcode);
           headers['Content-Length'] = guid_content.length;
-          res.writeHead(response.statusCode,headers);
+          res.writeHead(response.statusCode, headers);
           res.end(guid_content);
         } else {
-          var guid_content = genGuidMsg(1,'','');
+          var guid_content = genGuidMsg(1, '', '');
           headers['Content-Length'] = guid_content.length;
-          res.writeHead(response.statusCode,headers);
+          res.writeHead(response.statusCode, headers);
           res.end(guid_content);
         }
       });
     });
-    console.log(body);
     request.end(body, 'binary');
   });
 });
 
-
 var isEmpty = function(value) {
-    var temp = _.trim(value);
-    console.log(value +' => '+ temp);
-    console.log(temp == undefined || temp == '');
-    return (temp == undefined || temp == '');
-  };
+  var temp = _.trim(value);
+  return (temp == undefined || temp == '');
+};
 
 app.get('/Auth/:idcode/Order', function(req, res) {
+  console.log(req.query.action);
   var action = req.query.action;
   var idcode = req.params.idcode;
   var ac = req.query.ac;
@@ -367,7 +389,7 @@ app.get('/Auth/:idcode/Order', function(req, res) {
   var ip = req.query.ip;
   var c = '02';
   var responseData = {};
-  if (action == undefined || !_.include(['list', 'order', 'cancel'], action)) {
+  if (action == undefined || ! _.include(['list', 'order', 'cancel'], action)) {
     responseData['status_code'] = 404;
     responseData['status_txt'] = 'action error';
     res.end(JSON.stringify(responseData));
@@ -377,9 +399,9 @@ app.get('/Auth/:idcode/Order', function(req, res) {
     res.end(JSON.stringify(responseData));
   } else {
     guidService.getMSISDNByIDCode(idcode, function(result) {
-      if (!result.error && !isEmpty(result.msisdn)) {
+      if (!result.error && ! isEmpty(result.msisdn)) {
         if (action == 'list') {
-          auth.listOrders(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
+          auth.listOrders(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult) {
             responseData['status_code'] = 200;
             responseData['status_txt'] = 'OK';
             responseData['result'] = authResult;
@@ -388,7 +410,7 @@ app.get('/Auth/:idcode/Order', function(req, res) {
         }
         if (action == 'order') {
           c = req.query.c;
-          if(isEmpty(c) || !_.include(['02','11','12','13'],c)) {
+          if (isEmpty(c) || ! _.include(['02', '11', '12', '13'], c)) {
             responseData['status_code'] = 404;
             responseData['status_txt'] = 'lost param c';
             res.end(JSON.stringify(responseData));
@@ -396,7 +418,7 @@ app.get('/Auth/:idcode/Order', function(req, res) {
             responseData['status_code'] = 200;
             responseData['status_txt'] = 'OK';
             res.end(JSON.stringify(responseData));
-            auth.doOrder(result.msisdn, c, ac, mc, mt, ua, ak, ip, function(authResult){
+            auth.doOrder(result.msisdn, c, ac, mc, mt, ua, ak, ip, function(authResult) {
               console.log(authResult);
             });
           }
@@ -405,7 +427,7 @@ app.get('/Auth/:idcode/Order', function(req, res) {
           responseData['status_code'] = 200;
           responseData['status_txt'] = 'OK';
           res.end(JSON.stringify(responseData));
-          auth.doCancelOrder(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult){
+          auth.doCancelOrder(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult) {
             console.log(authResult);
           });
         }
@@ -420,3 +442,4 @@ app.get('/Auth/:idcode/Order', function(req, res) {
 console.log(configs.service_port);
 app.listen(configs.service_port);
 console.log('Service Started ' + utils.getLocaleISOString());
+
