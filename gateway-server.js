@@ -17,7 +17,7 @@ var guidServer = require('./lib/guidservice');
 var guidService = guidServer.getGUIDService('127.0.0.1', 8081);
 
 var authority = require('./lib/auth');
-var auth = authority.getAuthority('211.136.109.36', 8081);
+var auth = authority.getAuthority('218.204.252.231', 8081);
 
 var N6Server = require('./lib/n6_server');
 var n6Service = N6Server.getN6Server(configs.n6.host, configs.n6.port);
@@ -38,9 +38,15 @@ redis_client_msisdn_range.on('ready', function() {
   redis_client_msisdn_range.select(configs.redis.msisdn_range_db);
 });
 
+var debug_info = function(info) {
+  if(configs.debug) {
+    console.log(info);
+  }
+}
 var proxy2Nx = function(request, res, proxy_option) {
   var body = '';
   var headers = request.headers;
+  console.log(headers);
   var options = {
     host: proxy_option.host,
     port: proxy_option.port,
@@ -90,9 +96,11 @@ var n4_proxy = function(request, res, data) {
 var n6_proxy = function(request, res, data) {
   _logger.info(['PROXY', request.url, request.headers['x-guid'], request.headers['x-sess'] || '-'].join("\t"));
   var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
-  console.log(guid);
+  debug_info(guid);
   if ('-' == guid || undefined == guid) {
-    console.log('n6_proxy: can not get guid from header');
+    debug_info('n6_proxy: can not get guid from header');
+    debug_info(utils.getErrorMessage( - 1, 'NO_GUID'));
+    debug_info(request.headers);
     res.end(utils.getErrorMessage( - 1, 'NO_GUID'));
   } else {
     // 设置目标地址和端口
@@ -103,10 +111,10 @@ var n6_proxy = function(request, res, data) {
     if (data) {
       proxy_option.data = data;
     }
-    console.log(guid);
+    debug_info(guid);
     guidService.getIDCodeByGUID(guid, function(result) {
-      console.log('n6_proxy: ' + guid);
-      console.log(result);
+      debug_info('n6_proxy: ' + guid);
+      debug_info(result);
       if (!result.error) {
         request.headers['x-up-calling-line-id'] = String(result.idcode);
       } else {
@@ -122,10 +130,11 @@ var n6_proxy = function(request, res, data) {
       }
       ////xxxx
       var functionID = request.headers['x-fidbid'];
-      console.log('FUCTIONID: ' + functionID);
+      debug_info(request.headers);
+      debug_info('FUNCTIONID : ' + functionID);
       //判断是否需要过认证
-      if ('24000000' == functionID || '27000001' == functionID) {
-        console.log('zzzzzzzzzzzzzzzzzzzzzzzzzzzz');
+      if ('24000000' == functionID || '27000001' == functionID || (functionID != undefined && functionID.substr(0,3) == '270')) {
+        debug_info('zzzzzzzzzzzzzzzzzzzzzzzzzzzz');
         //Auth2/action?c=02&v=200&sc=0001&ac=00000000&mc=00000&mt=00000000000000000000&MSISDN=15884122092&ua=j2me&ip=10.10.10.10&uid=2010&AK=
         //auth.doAuth = function(msisdn, ac, mc, mt, ua, ak, ip, functionID, callback)
         var ac = '01000000';
@@ -135,24 +144,27 @@ var n6_proxy = function(request, res, data) {
         var ak = request.headers['x-ak']
         var ip = getRealIP(request);
         var guid = utils.getGUIDFromXGUID(request.headers['x-guid']);
-        console.log('222222222222222222222222222222222222');
+        debug_info('222222222222222222222222222222222222');
         guidService.getMSISDNByGUID(guid, function(result) {
-          console.log(result);
-          console.log('3333333333333333');
-          if (result.msisdn != '') {
+          debug_info(result);
+          debug_info('3333333333333333');
+          //手机号不为空并且functionID为收费功能ID
+          if (result.msisdn != '' && ('24000000' == functionID || '27000001' == functionID || '10005000' == functionID) ) {
             request.headers['x-get-msisdn'] = true;
+            debug_info('ready to do auth');
             auth.doAuth(result.msisdn, ac, mc, mt, ua, ak, ip, functionID, function(authResult) {
-              console.log('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
-              console.log(authResult);
-              console.log(result.msisdn);
+              debug_info('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+              debug_info(authResult);
+              debug_info(result.msisdn);
               if (authResult.result != 200) {
                 request.headers['x-auth-result'] = false;
               } else {
                 request.headers['x-auth-result'] = true;
               }
-              if ('27000001' == functionID && authResult.result != 200) {
-                getPropince(msisdn, function(province) {
-                  n6Service.getSubscribe(province, authResult.message, function(subscribePage) {
+              if (('24000000' == functionID || '27000001' == functionID || '10005000' == functionID) && authResult.result != 200) {
+                getAreaCode(result.msisdn, function(province) {
+                  debug_info('REQ_URL : '+request.url);
+                  n6Service.getSubscribe(province, authResult.message, request.url, request.headers, data, function(subscribePage) {
                     var tempHeaders = {};
                     tempHeaders['Content-Length'] = subscribePage.length;
                     res.writeHead(200, tempHeaders);
@@ -163,12 +175,21 @@ var n6_proxy = function(request, res, data) {
                 proxy2Nx(request, res, proxy_option);
               }
             });
+          } else if( result.msisdn != '' && functionID.substr(0,3) == '270' ) { //手机号不为空,并且functionID要求判断地区
+            console.log('需要地区信息给N6');
+            getAreaCode(result.msisdn, function(areaCode) {
+              request.headers['x-area'] = areaCode;
+              console.log('地区:  '+ areaCode);
+              console.log('FUNCTION_ID in getProvince :' + functionID);
+              proxy2Nx(request, res, proxy_option);
+            });
           } else { //不能取得手机号
             request.headers['x-get-msisdn'] = false;
             proxy2Nx(request, res, proxy_option);
           }
         });
       } else {
+        console.log('不需要地区信息');
         proxy2Nx(request, res, proxy_option);
       }
 
@@ -192,7 +213,7 @@ var isFirstVisit = function(guid, callback) {
   });
 };
 
-var getPropince = function(msisdn, callback) {
+var getProvince = function(msisdn, callback) {
   var key = msisdn.substr(0, 7);
   redis_client_msisdn_range.hgetall(key, function(error, obj) {
     if (null == error) {
@@ -203,6 +224,21 @@ var getPropince = function(msisdn, callback) {
       }
     } else {
       callback('其它');
+    }
+  });
+};
+
+var getAreaCode = function(msisdn, callback) {
+  var key = msisdn.substr(0, 7);
+  redis_client_msisdn_range.hgetall(key, function(error, obj) {
+    if (null == error) {
+      if (obj.areacode != undefined) {
+        callback(obj.areacode);
+      } else {
+        callback('000');
+      }
+    } else {
+      callback('000');
     }
   });
 };
@@ -233,7 +269,8 @@ var isComeFromWAPNet = function(ip) {
  * @return void
  */
 app.get('/N6/:uri', function(req, res) {
-  console.log('GET N6');
+  debug_info('GET N6');
+  debug_info('FUNCDION_ID:'+req.headers['x-fidbid']);
   var guid = utils.getGUIDFromXGUID(req.headers['x-guid']);
   isFirstVisit(guid, function(firstVisit) {
     if (firstVisit) {
@@ -252,7 +289,7 @@ app.get('/N6/:uri', function(req, res) {
  * @return void
  */
 app.post('/N6/:uri', function(req, res) {
-  console.log('POST N6');
+  debug_info('POST N6');
   var realIP = getRealIP(req);
   if (isComeFromWAPNet(realIP)) {
     //TODO::处理来自WAP网关的情况
@@ -372,13 +409,63 @@ app.post('/getGUID', function(req, res) {
   });
 });
 
+app.get('/getGUID', function(req, res) {
+  //req.on('end', function() {
+    var headers = req.headers;
+    var options = {
+      host: '127.0.0.1',
+      port: 8081,
+      path: req.url,
+      method: req.method,
+      headers: headers
+    };
+    var request = http.request(options, function(response) {
+      var guid = '';
+      response.setEncoding('binary');
+      response.on('data', function(chunk) {
+        guid += chunk;
+      });
+      response.on('end', function() {
+        if (response.headers['transfer-encoding'] != undefined) {
+          delete response.headers['transfer-encoding'];
+        }
+        if (response.headers['content-length'] != undefined) {
+          delete response.headers['content-length'];
+        }
+        response.headers['Content-Length'] = guid.length;
+        //var headers = response.headers;
+        var headers = {};
+        headers['Content-type'] = 'text/xml';
+        //res.writeHead(response.statusCode);
+        var result = JSON.parse(guid);
+        if (!result.error) {
+          var guid_content = genGuidMsg(0, result.guid, result.vcode);
+          headers['Content-Length'] = guid_content.length;
+          res.writeHead(response.statusCode, headers);
+          res.end(guid_content);
+        } else {
+          var guid_content = genGuidMsg(1, '', '');
+          headers['Content-Length'] = guid_content.length;
+          res.writeHead(response.statusCode, headers);
+          res.end(guid_content);
+        }
+      });
+    });
+    request.end('', 'binary');
+  //});
+});
+
 var isEmpty = function(value) {
   var temp = _.trim(value);
   return (temp == undefined || temp == '');
 };
 
 app.get('/Auth/:idcode/Order', function(req, res) {
-  console.log(req.query.action);
+  debug_info('########################################');
+  debug_info('########################################');
+  debug_info(req.query.action);
+  debug_info('########################################');
+  debug_info('########################################');
   var action = req.query.action;
   var idcode = req.params.idcode;
   var ac = req.query.ac;
@@ -419,7 +506,7 @@ app.get('/Auth/:idcode/Order', function(req, res) {
             responseData['status_txt'] = 'OK';
             res.end(JSON.stringify(responseData));
             auth.doOrder(result.msisdn, c, ac, mc, mt, ua, ak, ip, function(authResult) {
-              console.log(authResult);
+              debug_info(authResult);
             });
           }
         }
@@ -428,7 +515,7 @@ app.get('/Auth/:idcode/Order', function(req, res) {
           responseData['status_txt'] = 'OK';
           res.end(JSON.stringify(responseData));
           auth.doCancelOrder(result.msisdn, ac, mc, mt, ua, ak, ip, function(authResult) {
-            console.log(authResult);
+            debug_info(authResult);
           });
         }
       } else {
