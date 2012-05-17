@@ -12,10 +12,10 @@ redis_client_msisdn_range.on('ready', function() {
 
 var fs = require('fs');
 
-var file_name = 'znw.dat';
-var mark = 'Z';
+var file_name = '18x.dat';
+var mark = 'B';
 
-/*
+
 var data = fs.readFileSync(file_name, 'utf8');
 var data_array = data.split("\r\n");
 
@@ -43,8 +43,8 @@ for(var i = 0, len = data_array.length; i < len; i++) {
   }
   
 }
-*/
 
+/*
 redis_client_msisdn_range.hgetall('1358162',function(error,obj){
   if(null == error) {
     if(obj.province != undefined) {
@@ -56,3 +56,5 @@ redis_client_msisdn_range.hgetall('1358162',function(error,obj){
     console.log('其它');
   }
 });
+*/
+redis_client_msisdn_range.quit();
