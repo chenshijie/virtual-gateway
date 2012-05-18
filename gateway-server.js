@@ -16,7 +16,7 @@ _.mixin(require('underscore.string'));
 var guidServer = require('./lib/guidservice');
 var guidService = guidServer.getGUIDService('127.0.0.1', 8081);
 
-var authority = require('./lib/auth');
+var authority = require('./lib/auth_json');
 var auth = authority.getAuthority('218.204.252.231', 8081);
 
 var N6Server = require('./lib/n6_server');
