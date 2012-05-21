@@ -164,7 +164,7 @@ var n6_proxy = function(request, res, data) {
               if (('24000000' == functionID || '27000001' == functionID || '10005000' == functionID) && authResult.result != 200) {
                 getAreaCode(result.msisdn, function(province) {
                   debug_info('REQ_URL : '+request.url);
-                  n6Service.getSubscribe(province, authResult.message, request.url, request.headers, data, function(subscribePage) {
+                  n6Service.getSubscribe(province, authResult.msg, request.url, request.headers, data, function(subscribePage) {
                     var tempHeaders = {};
                     tempHeaders['Content-Length'] = subscribePage.length;
                     res.writeHead(200, tempHeaders);
